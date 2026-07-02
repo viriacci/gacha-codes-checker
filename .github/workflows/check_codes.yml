@@ -1,0 +1,38 @@
+name: Check game codes
+
+on:
+  schedule:
+    # co 20 minut - GitHub nie gwarantuje dokladnosci co do minuty przy dużym obciążeniu
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}  # pozwala odpalic recznie z zakladki Actions do testow
+
+permissions:
+  contents: write  # potrzebne, zeby workflow mogl commitowac seen_codes.json
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python scraper.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "code-checker-bot"
+          git config user.email "actions@github.com"
+          git add seen_codes.json
+          git diff --staged --quiet && echo "Brak zmian do commita" || git commit -m "Update seen codes [skip ci]"
+          git push
