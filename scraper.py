@@ -52,16 +52,12 @@ def extract_active_codes(html: str):
 
             code_cell, reward_cell = cells[0], cells[1]
 
-            # szukamy linku z parametrem ?code=
-            code_link = code_cell.find("a", href=re.compile(r"[?&]code="))
-            if not code_link:
+            # kod siedzi w atrybucie value inputa do kopiowania, nie w linku
+            code_input = code_cell.find("input", class_="a-clipboard__textInput")
+            if not code_input or not code_input.get("value"):
                 continue
 
-            match = re.search(r"[?&]code=([A-Za-z0-9]+)", code_link["href"])
-            if not match:
-                continue
-
-            code = match.group(1)
+            code = code_input["value"].strip()
 
             # tekst nagród: bierzemy wszystkie linki + tekst przy nich (np. "Mora x10,000")
             reward_text = reward_cell.get_text(separator=" ", strip=True)
