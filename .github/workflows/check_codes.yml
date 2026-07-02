@@ -33,6 +33,10 @@ jobs:
         run: |
           git config user.name "code-checker-bot"
           git config user.email "actions@github.com"
-          git add seen_codes.json
-          git diff --staged --quiet && echo "Brak zmian do commita" || git commit -m "Update seen codes [skip ci]"
-          git push
+          if [ -f seen_codes.json ]; then
+            git add seen_codes.json
+            git diff --staged --quiet && echo "Brak zmian do commita" || git commit -m "Update seen codes [skip ci]"
+            git push
+          else
+            echo "seen_codes.json nie istnieje - scraper nie zapisal stanu (sprawdz log 'Run scraper')"
+          fi
