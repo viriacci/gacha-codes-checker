@@ -1,5 +1,6 @@
 """
-Sprawdza strony Game8 pod kątem nowych kodów do gier i wysyła ping na Discorda.
+Sprawdza kody do gier (API dla Genshin/ZZZ/HSR, scraping Game8 dla WuWa/NTE)
+i wysyła ping na Discorda przy nowych kodach.
 Uruchamiane cyklicznie przez GitHub Actions (patrz .github/workflows/check_codes.yml).
 """
  
@@ -13,7 +14,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
  
-from config import GAMES, STATE_FILE
+from config import GAMES, CODES_API_URL, STATE_FILE
  
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 HEADERS = {
@@ -36,16 +37,29 @@ def save_state(state):
         json.dump(state, f, indent=2, ensure_ascii=False)
  
  
-def extract_active_codes(html: str):
+def fetch_codes_from_api(game_key: str, game: dict):
+    """Pobiera kody dla gier obslugiwanych przez db.hashblen.com/codes (bez scrapowania)."""
+    try:
+        resp = requests.get(CODES_API_URL, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        print(f"[ERROR] API {CODES_API_URL} nie odpowiedzialo poprawnie: {e}", file=sys.stderr)
+        return []
+ 
+    entries = data.get(game["api_key"], [])
+    return [(entry["code"], entry.get("description", "") or "brak opisu") for entry in entries]
+ 
+ 
+def extract_active_codes_from_html(html: str):
     """
-    Zwraca listę (kod, nagrody_tekst) tylko z sekcji AKTYWNYCH kodów.
-    Ucina parsowanie przy pierwszym nagłówku zawierającym 'Expired'.
+    Zwraca liste (kod, nagrody_tekst) z tabel Game8, tylko sekcja AKTYWNYCH kodow.
+    Obsluguje zarowno tabele 2-kolumnowe (kod | nagrody) jak i 1-kolumnowe (WuWa).
     """
     soup = BeautifulSoup(html, "html.parser")
     results = []
  
     for table in soup.find_all("table"):
-        # sprawdź czy ta tabela jest już za nagłówkiem "Expired" - jeśli tak, pomiń
         prev_heading = table.find_previous(["h2", "h3"])
         if prev_heading and "expired" in prev_heading.get_text(strip=True).lower():
             continue
@@ -58,19 +72,14 @@ def extract_active_codes(html: str):
             if len(cells) >= 2:
                 code_cell, reward_cell = cells[0], cells[1]
             else:
-                # niektore gry (np. WuWa) maja tabele z JEDNA kolumna,
-                # gdzie kod i nagrody siedza w tej samej komorce
                 code_cell = reward_cell = cells[0]
  
-            # kod siedzi w atrybucie value inputa do kopiowania, nie w linku
             code_input = code_cell.find("input", class_="a-clipboard__textInput")
             if not code_input or not code_input.get("value"):
                 continue
  
             code = code_input["value"].strip()
  
-            # usuwamy widget kopiowania z komorki nagrod, zeby nie wlaczyl sie
-            # do tekstu nagrod gdy code_cell i reward_cell to ta sama komorka
             reward_soup = BeautifulSoup(str(reward_cell), "html.parser")
             clipboard_widget = reward_soup.find("div", class_="a-clipboard__container")
             if clipboard_widget:
@@ -84,13 +93,36 @@ def extract_active_codes(html: str):
     return results
  
  
-def send_discord_ping(game_key: str, game: dict, code: str, rewards: str):
+def fetch_codes_from_scrape(game_key: str, game: dict):
+    """
+    Best-effort scraping Game8 dla gier bez wlasnego API (WuWa, NTE).
+    Jesli strona zwroci AWS WAF challenge (status 202, brak tabel), zwraca pusta liste
+    i loguje ostrzezenie zamiast wywalac caly run.
+    """
+    try:
+        resp = requests.get(game["url"], headers=HEADERS, timeout=20)
+    except requests.RequestException as e:
+        print(f"  [WARN] Nie udalo sie polaczyc z {game['url']}: {e}", file=sys.stderr)
+        return []
+ 
+    if "awsWafCookie" in resp.text or "awswaf" in resp.text.lower():
+        print(f"  [WARN] Game8 zwrocilo wyzwanie AWS WAF dla {game['name']} - pomijam ten run.")
+        return []
+ 
+    if resp.status_code != 200:
+        print(f"  [WARN] Game8 zwrocilo status {resp.status_code} dla {game['name']} - pomijam.")
+        return []
+ 
+    return extract_active_codes_from_html(resp.text)
+ 
+ 
+def send_discord_ping(game: dict, code: str, rewards: str):
     role_mention = f"<@&{game['role_id']}>"
     content = f"{role_mention} Nowy kod do **{game['name']}**!"
  
     fields = [
         {"name": "Kod", "value": f"```{code}```", "inline": False},
-        {"name": "Nagrody", "value": rewards[:1000] or "brak danych", "inline": False},
+        {"name": "Nagrody", "value": (rewards or "brak danych")[:1000], "inline": False},
     ]
  
     if game.get("redeem_base"):
@@ -112,7 +144,7 @@ def send_discord_ping(game_key: str, game: dict, code: str, rewards: str):
     resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
     if resp.status_code >= 300:
         print(f"[WARN] Discord webhook zwrocil {resp.status_code}: {resp.text}", file=sys.stderr)
-    time.sleep(1)  # unikamy rate-limitu webhooka przy kilku kodach naraz
+    time.sleep(1)
  
  
 def main():
@@ -121,43 +153,33 @@ def main():
         sys.exit(1)
  
     state = load_state()
-    new_codes_found = False
+    any_new = False
  
     for game_key, game in GAMES.items():
-        print(f"Sprawdzam {game['name']}...")
-        try:
-            resp = requests.get(game["url"], headers=HEADERS, timeout=20)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            print(f"[ERROR] Nie udalo sie pobrac {game['url']}: {e}", file=sys.stderr)
-            continue
+        print(f"Sprawdzam {game['name']} (zrodlo: {game['source']})...")
  
-        # DEBUG: pokazujemy co realnie przyszlo w odpowiedzi, zeby wykryc blokade bota
-        print(f"  [DEBUG] status={resp.status_code} dlugosc={len(resp.text)} znakow")
-        print(f"  [DEBUG] pierwsze 300 znakow: {resp.text[:300]!r}")
-        print(f"  [DEBUG] liczba tabel na stronie: {len(BeautifulSoup(resp.text, 'html.parser').find_all('table'))}")
+        if game["source"] == "api":
+            codes = fetch_codes_from_api(game_key, game)
+        else:
+            codes = fetch_codes_from_scrape(game_key, game)
  
-        active_codes = extract_active_codes(resp.text)
-        print(f"  [DEBUG] znaleziono {len(active_codes)} aktywnych kodow")
+        print(f"  Znaleziono {len(codes)} aktywnych kodow.")
+ 
         seen = set(state.get(game_key, []))
- 
-        for code, rewards in active_codes:
+        for code, rewards in codes:
             if code not in seen:
                 print(f"  Nowy kod: {code}")
-                send_discord_ping(game_key, game, code, rewards)
+                send_discord_ping(game, code, rewards)
                 seen.add(code)
-                new_codes_found = True
+                any_new = True
  
         state[game_key] = sorted(seen)
-        time.sleep(2)  # nie bombardujemy game8.co requestami pod rzad
+        time.sleep(1)
  
-    if new_codes_found:
-        save_state(state)
-        print("Zapisano nowy stan.")
-    else:
-        print("Brak nowych kodow.")
+    # zawsze zapisujemy stan, nawet jesli nic nowego - zeby plik zawsze istnial w repo
+    save_state(state)
+    print("Zapisano stan." if any_new else "Brak nowych kodow.")
  
  
 if __name__ == "__main__":
     main()
- 
