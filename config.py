@@ -1,39 +1,46 @@
 GAMES = {
     "genshin": {
         "name": "Genshin Impact",
-        "url": "https://game8.co/games/Genshin-Impact/archives/304759",
+        "source": "api",
+        "api_key": "genshin",  # klucz w JSON-ie z db.hashblen.com/codes
         "role_id": "1521672555042177196",
         "color": 0x1E90FF,
         "redeem_base": "https://genshin.hoyoverse.com/en/gift?code=",
     },
     "zzz": {
         "name": "Zenless Zone Zero",
-        "url": "https://game8.co/games/Zenless-Zone-Zero/archives/435683",
+        "source": "api",
+        "api_key": "zzz",
         "role_id": "1521672938330394774",
         "color": 0x9B30FF,
         "redeem_base": "https://zenless.hoyoverse.com/redemption?code=",
     },
     "hsr": {
         "name": "Honkai: Star Rail",
-        "url": "https://game8.co/games/Honkai-Star-Rail/archives/410296",
+        "source": "api",
+        "api_key": "hsr",
         "role_id": "1521672961747058782",
         "color": 0xFFD700,
         "redeem_base": "https://hsr.hoyoverse.com/gift?code=",
     },
     "wuwa": {
         "name": "Wuthering Waves",
+        "source": "scrape",  # brak publicznego API - scrapujemy Game8, best-effort
         "url": "https://game8.co/games/Wuthering-Waves/archives/453149",
         "role_id": "1521796934874955826",
         "color": 0x00CED1,
-        "redeem_base": "https://mc.kurogames.com/main/exchangeCode",  # WuWa nie ma prostego ?code= redeema, patrz uwaga w scraper.py
+        "redeem_base": None,  # WuWa nie ma redeem strony z URL - kod wpisuje sie w grze
     },
     "nte": {
         "name": "Neverness to Everness",
+        "source": "scrape",  # brak publicznego API - scrapujemy Game8, best-effort
         "url": "https://game8.co/games/Neverness-to-Everness/archives/593718",
         "role_id": "1521796878403108894",
         "color": 0xFF4500,
-        "redeem_base": None,  # do potwierdzenia - gra jeszcze nie ma ugruntowanego systemu redeem URL
+        "redeem_base": None,
     },
 }
-
+ 
+CODES_API_URL = "https://db.hashblen.com/codes"
 STATE_FILE = "seen_codes.json"
+ 
