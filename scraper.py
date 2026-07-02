@@ -16,7 +16,12 @@ from bs4 import BeautifulSoup
 from config import GAMES, STATE_FILE
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; CodeCheckerBot/1.0)"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
+}
 
 
 def load_state():
@@ -116,7 +121,13 @@ def main():
             print(f"[ERROR] Nie udalo sie pobrac {game['url']}: {e}", file=sys.stderr)
             continue
 
+        # DEBUG: pokazujemy co realnie przyszlo w odpowiedzi, zeby wykryc blokade bota
+        print(f"  [DEBUG] status={resp.status_code} dlugosc={len(resp.text)} znakow")
+        print(f"  [DEBUG] pierwsze 300 znakow: {resp.text[:300]!r}")
+        print(f"  [DEBUG] liczba tabel na stronie: {len(BeautifulSoup(resp.text, 'html.parser').find_all('table'))}")
+
         active_codes = extract_active_codes(resp.text)
+        print(f"  [DEBUG] znaleziono {len(active_codes)} aktywnych kodow")
         seen = set(state.get(game_key, []))
 
         for code, rewards in active_codes:
