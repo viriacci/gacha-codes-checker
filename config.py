@@ -45,9 +45,12 @@ GAMES = {
         "role_id": "1521796878403108894",
         "color": 0xFF4500,
         "redeem_base": None,
+        "fallback_sources": [
+            {"url": "https://mobalytics.gg/neverness-to-everness/redemption-codes", "parser": "mobalytics"},
+        ],
         "icon_url": "https://raw.githubusercontent.com/viriacci/gacha-codes-checker/main/icons/NTE.png",
     },
 }
- 
+
 CODES_API_URL = "https://db.hashblen.com/codes"
 STATE_FILE = "seen_codes.json"
