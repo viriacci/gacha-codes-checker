@@ -291,7 +291,7 @@ def send_discord_ping(game_key: str, game: dict, code: str, rewards: str, expiry
     time.sleep(1)
 
 
-FAILURE_ALERT_THRESHOLD = 4  # 4 kolejne nieudane proby = ok. 24h przy sprawdzaniu co 6h
+FAILURE_ALERT_THRESHOLD = 4  # 4 kolejne nieudane proby z rzedu (dokladny czas zalezy od pory dnia - patrz cron)
 ALERT_ROLE_ID = "1520941252147941556"
 
 
@@ -299,8 +299,8 @@ def send_status_alert(game: dict, failures: int):
     role_mention = f"<@&{ALERT_ROLE_ID}>"
     payload = {
         "content": (
-            f"{role_mention} ⚠️ Nie mogę sprawdzić kodów do **{game['name']}** od {failures} kolejnych prób "
-            f"(ok. {failures * 6}h). Źródło może być trwale zablokowane - sprawdź logi Actions."
+            f"{role_mention} ⚠️ Nie mogę sprawdzić kodów do **{game['name']}** od {failures} kolejnych prób. "
+            f"Źródło może być trwale zablokowane - sprawdź logi Actions."
         )
     }
     try:
