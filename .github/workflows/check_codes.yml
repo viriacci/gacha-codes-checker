@@ -2,8 +2,10 @@ name: Check game codes
 
 on:
   schedule:
-    # co 20 minut - GitHub nie gwarantuje dokladnosci co do minuty przy dużym obciążeniu
-    - cron: "*/20 * * * *"
+    # przerwa nocna 23-7 czasu polskiego, sprawdzanie co 4h w ciagu dnia
+    # dwa harmonogramy zamiast jednego, zeby uwzglednic czas letni/zimowy (CEST/CET)
+    - cron: "0 5,9,13,17,21 * 4,5,6,7,8,9,10 *"   # lato (UTC+2): 7-23 lokalnie
+    - cron: "0 6,10,14,18,22 * 11,12,1,2,3 *"     # zima (UTC+1): 7-23 lokalnie
   workflow_dispatch: {}  # pozwala odpalic recznie z zakladki Actions do testow
 
 permissions:
