@@ -45,10 +45,19 @@ def get_with_retry(url: str, headers: dict = None, timeout: int = 20, attempts: 
 
 
 def load_state():
-    if Path(STATE_FILE).exists():
+    if not Path(STATE_FILE).exists():
+        return {}
+    try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+            content = f.read().strip()
+            if not content:
+                print(f"  [WARN] {STATE_FILE} jest pusty - zaczynam od czystego stanu.")
+                return {}
+            return json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"  [WARN] {STATE_FILE} jest uszkodzony ({e}) - zaczynam od czystego stanu "
+              f"(niebezpieczenstwo: zdublowane pingi dla juz wyslanych kodow w tym runie).")
+        return {}
 
 
 def save_state(state):
