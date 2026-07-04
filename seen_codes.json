@@ -1,1 +1,50 @@
-
+{
+  "genshin": [
+    "EZSB8889C2BZ",
+    "LEGEDILJKSGM",
+    "PFY1S40I88T9"
+  ],
+  "zzz": [
+    "BBPU5PC7F7W5",
+    "CBW0884678",
+    "ROSCAELIFER0617",
+    "ZENLESSGIFT",
+    "ZZZ30BANGBOO",
+    "ZZZSEASON3",
+    "ZZZSTEAM",
+    "ZZZSUSHIRO"
+  ],
+  "hsr": [
+    "4TKSX77Y58QK",
+    "5S6ZHRWTDNJB",
+    "BLADEFITCHECK",
+    "CREATIONNYMPH",
+    "CTK5DRQVT48F",
+    "FAREWELL",
+    "HT3QMCJ9U4JB",
+    "IFYOUAREREADINGTHIS",
+    "OMEGA",
+    "STARRAILGIFT",
+    "WAK84U29VLYP",
+    "XTJ9MV38DL3X"
+  ],
+  "wuwa": [],
+  "nte": [
+    "999NIGHTS🆕[EXPIRES JUNE 29TH 23:59 (UTC+8)]",
+    "IROI0729🆕[EXPIRES JUNE 29TH 23:59 (UTC+8)]",
+    "LACRIMOSA0603",
+    "NTEFREE",
+    "NTEFUNGAME",
+    "NTEGIFT",
+    "NTEVTUBER200",
+    "NTEWINFONS",
+    "SHINKU0708🆕[EXPIRES JUNE 29TH 23:59 (UTC+8)]"
+  ],
+  "_failures": {
+    "genshin": 0,
+    "zzz": 0,
+    "hsr": 0,
+    "wuwa": 1,
+    "nte": 0
+  }
+}
