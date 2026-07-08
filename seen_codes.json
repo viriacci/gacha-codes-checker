@@ -35,6 +35,7 @@
     "999NIGHTS",
     "999NIGHTS🆕[EXPIRES JUNE 29TH 23:59 (UTC+8)]",
     "DRAGONGIRL",
+    "DRAGONGIRL🆕",
     "DREAMWALK0603",
     "IROI0729",
     "IROI0729🆕[EXPIRES JUNE 29TH 23:59 (UTC+8)]",
@@ -48,13 +49,14 @@
     "RACENOLIMIT",
     "SHINKU0708",
     "SHINKU0708🆕[EXPIRES JUNE 29TH 23:59 (UTC+8)]",
-    "TOMATO100"
+    "TOMATO100",
+    "WELCOMETONTE🆕"
   ],
   "_failures": {
     "genshin": 0,
     "zzz": 0,
     "hsr": 0,
-    "wuwa": 0,
+    "wuwa": 1,
     "nte": 0
   }
 }
