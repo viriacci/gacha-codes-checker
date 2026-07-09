@@ -25,6 +25,15 @@ HEADERS = {
 }
 
 
+def sanitize_code(raw_code: str) -> str:
+    """
+    Prawdziwy kod do gry to zawsze litery/cyfry (czasem podkreslnik).
+    Usuwa wszystko inne - emoji, spacje, znaczniki "NEW" ktore czasem
+    doklejaja sie do tekstu kodu przy scrapowaniu roznych stron.
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "", raw_code or "").strip()
+
+
 def get_with_retry(url: str, headers: dict = None, timeout: int = 20, attempts: int = 3):
     """
     GET z ponowieniami przy chwilowym bledzie sieci (timeout, zerwane polaczenie).
@@ -88,7 +97,10 @@ def fetch_codes_from_api(game_key: str, game: dict):
             # dzielimy w miejscach: cyfra + spacja + wielka litera = granica nowej pozycji
             items = re.split(r"(?<=\d)\s+(?=[A-Z])", desc)
             reward_text = "\n".join(f"• {item.strip()}" for item in items if item.strip())
-        results.append((entry["code"], reward_text, None))
+        code = sanitize_code(entry["code"])
+        if not code:
+            continue
+        results.append((code, reward_text, None))
     return results
 
 
@@ -119,7 +131,9 @@ def extract_active_codes_from_html(html: str):
             if not code_input or not code_input.get("value"):
                 continue
 
-            code = code_input["value"].strip()
+            code = sanitize_code(code_input["value"])
+            if not code:
+                continue
 
             # data wygasniecia - siedzi w span.a-red obok inputa (dostepne tylko przy scrapingu)
             expiry_span = code_cell.find("span", class_="a-red")
@@ -172,8 +186,8 @@ def extract_active_codes_from_mobalytics(html: str):
             if len(cells) < 2:
                 continue  # to prawdopodobnie wiersz naglowka (th, nie td)
 
-            code = cells[0].get_text(strip=True)
-            if not code or code.lower() == "code":
+            code = sanitize_code(cells[0].get_text(strip=True))
+            if not code or code.upper() == "CODE":
                 continue
 
             reward_items = [li.get_text(strip=True) for li in cells[1].find_all("li")]
