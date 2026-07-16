@@ -46,6 +46,8 @@
     "NTEFREE",
     "NTEFUNGAME",
     "NTEGIFT",
+    "NTEKOKUSHI",
+    "NTEMUSOU",
     "NTENENE",
     "NTEVTUBER200",
     "NTEWINFONS",
@@ -60,7 +62,7 @@
     "genshin": 0,
     "zzz": 0,
     "hsr": 0,
-    "wuwa": 6,
+    "wuwa": 7,
     "nte": 0
   }
 }
