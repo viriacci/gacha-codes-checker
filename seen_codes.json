@@ -50,9 +50,12 @@
     "CBW0884678",
     "FLINTWORKS",
     "HOLLOWRUN33",
+    "HOLLOWRUN34",
     "INKSHIFT33",
+    "INKSHIFT34",
     "JRNY2SKY",
     "LEVELUP33",
+    "LEVELUP34",
     "REMIELLE0729",
     "ROSCAELIFER0617",
     "SUNBRINGER",
@@ -144,7 +147,7 @@
     "genshin": 0,
     "zzz": 0,
     "hsr": 0,
-    "wuwa": 5,
-    "nte": 5
+    "wuwa": 6,
+    "nte": 6
   }
 }
