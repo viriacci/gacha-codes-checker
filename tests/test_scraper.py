@@ -36,3 +36,13 @@ class ScraperTests(unittest.TestCase):
     def test_ntebuild(self):
         html = "<table><tr><th>Code</th><th>Rewards</th><th>Validity</th><th>Status</th></tr><tr><td>ABC123</td><td>50 coins</td><td>TBA</td><td>✓ Working</td></tr></table>"
         self.assertEqual(scraper.extract_ntebuild(html), [("ABC123","• 50 coins",None)])
+
+    def test_group_mentions_and_expiry(self):
+        game = {"name":"Test","role_id":"123","color":0}
+        payload = scraper.build_group("test",game,[("ABC123",None,"2020-01-01")],False)
+        self.assertEqual(payload["allowed_mentions"]["roles"],[])
+        self.assertIn("wygasł",payload["embeds"][0]["fields"][0]["value"])
+    def test_private_notice_never_uses_public_webhook(self):
+        with patch.object(scraper,"ADMIN_WEBHOOK_URL",None), patch.object(scraper,"post_webhook") as send:
+            scraper.private_notice("test")
+            send.assert_not_called()

@@ -6,6 +6,8 @@ Uruchamiane cyklicznie przez GitHub Actions (patrz .github/workflows/check_codes
 
 import json
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from datetime import datetime, timezone
 import os
 import re
@@ -19,6 +21,7 @@ from bs4 import BeautifulSoup
 from config import GAMES, CODES_API_URL, STATE_FILE
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+ADMIN_WEBHOOK_URL = os.environ.get("ADMIN_DISCORD_WEBHOOK_URL")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -74,7 +77,7 @@ def load_state():
                 print(f"  [WARN] {STATE_FILE} jest pusty - zaczynam od czystego stanu.")
                 raise ValueError("Pusty plik stanu")
             state = json.loads(content)
-            if not isinstance(state, dict) or any(not isinstance(v, list) for k, v in state.items() if k != "_failures") or not isinstance(state.get("_failures", {}), dict):
+            if not isinstance(state, dict) or any(not isinstance(v, list) for k, v in state.items() if not k.startswith("_")) or not isinstance(state.get("_failures", {}), dict):
                 raise ValueError("Niepoprawna struktura stanu")
             return state
     except json.JSONDecodeError as e:
@@ -434,79 +437,134 @@ EMOJI = {
 }
 
 
-def send_discord_ping(game_key: str, game: dict, code: str, rewards: str, expiry: str | None):
-    role_mention = f"<@&{game['role_id']}>"
-    emoji = EMOJI.get(game_key, "🎮")
-    content = f"{role_mention} {emoji} Nowy kod do **{game['name']}**!"
-
-    fields = [
-        {"name": "Kod", "value": f"```{code}```", "inline": False},
-    ]
-
-    if rewards:
-        fields.append({"name": "Nagrody", "value": rewards[:1000], "inline": False})
-
-    if expiry:
-        fields.append({"name": "Wygasa", "value": expiry, "inline": True})
-
-    if game.get("redeem_base"):
-        fields.append({
-            "name": "Link",
-            "value": f"[Odbierz tutaj]({game['redeem_base']}{code})",
-            "inline": False,
-        })
-
-    embed = {
-        "title": f"{emoji} {game['name']} — Nowy kod",
-        "color": game["color"],
-        "fields": fields,
-        "footer": {"text": game["name"]},
-    }
-
-    if game.get("icon_url"):
-        embed["thumbnail"] = {"url": game["icon_url"]}
-
-    payload = {
-        "content": content,
-        "embeds": [embed],
-        "allowed_mentions": {"parse": [], "roles": [game["role_id"]]},
-    }
-
-    post_webhook(payload)
-    time.sleep(1)
-
-
-def post_webhook(payload):
-    # Retry only explicit rejections; timeout can mean Discord accepted the message.
-    for attempt in range(4):
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
-        if resp.status_code == 429 and attempt < 3:
-            time.sleep(min(60, max(1, float(resp.json().get("retry_after", 1)))))
-            continue
-        if resp.status_code >= 300:
-            raise RuntimeError(f"Discord HTTP {resp.status_code}")
-        return
-
-
-FAILURE_ALERT_THRESHOLD = 4  # 4 kolejne nieudane proby z rzedu (dokladny czas zalezy od pory dnia - patrz cron)
-ALERT_ROLE_ID = "1520941252147941556"
-
-
-def send_status_alert(game: dict, failures: int):
-    role_mention = f"<@&{ALERT_ROLE_ID}>"
-    payload = {
-        "content": (
-            f"{role_mention} ⚠️ Nie mogę sprawdzić kodów do **{game['name']}** od {failures} kolejnych prób. "
-            f"Źródło może być trwale zablokowane - sprawdź logi Actions."
-        )
-    }
+def expiry_date(value):
+    if not value:
+        return None
+    value = re.sub(r"^\s*(?:expires?|until|end date)\s*:?\s*", "", str(value), flags=re.I).strip()
+    for fmt in ("%Y-%m-%d", "%b %d, %Y", "%B %d, %Y", "%d %b %Y"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            pass
     try:
-        payload["allowed_mentions"] = {"parse": [], "roles": [ALERT_ROLE_ID]}
-        post_webhook(payload)
-        return True
-    except (requests.RequestException, RuntimeError, ValueError):
-        print("[WARN] Nie udalo sie wyslac alertu o awarii", file=sys.stderr)
-        return False
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return stamp if stamp.tzinfo else None
+    except ValueError:
+        return None
+
+
+def collect_codes(game_key, game):
+    sources = []
+    if game["source"] == "api":
+        sources.append(("API", lambda: fetch_codes_from_api(game_key, game)))
+        sources.append(("Game8", lambda: fetch_codes_from_scrape(game_key, game)))
+    else:
+        sources += [("OpenGachaCodes", lambda: fetch_open_codes(game)),
+                    ("Gachafeed", lambda: fetch_gachafeed(game)),
+                    ("Game8/fallback", lambda: fetch_codes_from_scrape(game_key, game))]
+        if game_key == "nte":
+            sources.append(("NTEBuild", fetch_ntebuild))
+    merged = {}
+    successful = 0
+    now = datetime.now(timezone.utc)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        tasks = [(name, pool.submit(fn)) for name, fn in sources]
+        for name, future in tasks:
+            try:
+                result = future.result()
+            except Exception as exc:
+                print(f"[WARN] {name}: {type(exc).__name__}")
+                continue
+            if result is None:
+                continue
+            successful += 1
+            print(f"[INFO] {name}: {len(result)} codes")
+            for code, rewards, expiry in result:
+                deadline = expiry_date(expiry)
+                if deadline and deadline <= now:
+                    continue
+                key = code.upper()
+                old = merged.get(key)
+                if old:
+                    old_deadline = expiry_date(old[2])
+                    selected = expiry if deadline and (not old_deadline or deadline < old_deadline) else old[2]
+                    merged[key] = (old[0], old[1] or rewards, selected)
+                else:
+                    merged[key] = (code, rewards, expiry)
+    return list(merged.values()) if successful else None
+
+
+def build_group(game_key, game, codes, ping=True):
+    emoji = EMOJI.get(game_key, "🎮")
+    fields = []
+    now = datetime.now(timezone.utc)
+    for code, rewards, expiry in codes:
+        value = "`" + code + "`"
+        if rewards:
+            value += "\n" + rewards[:650]
+        if expiry:
+            deadline = expiry_date(expiry)
+            if deadline and deadline <= now:
+                value += "\n⛔ Kod wygasł"
+            elif deadline and deadline <= now + timedelta(hours=24):
+                value += "\n⚠️ Wygasa w ciągu 24h: " + expiry[:120]
+            else:
+                value += "\nWygasa: " + expiry[:120]
+        if game.get("redeem_base") and not (expiry_date(expiry) and expiry_date(expiry) <= now):
+            value += "\n[Odbierz](" + game["redeem_base"] + code + ")"
+        fields.append({"name":code,"value":value[:1024],"inline":False})
+    embed = {"title":f"{emoji} {game['name']} — kody","color":game["color"],"fields":fields}
+    if game.get("icon_url"):
+        embed["thumbnail"] = {"url":game["icon_url"]}
+    return {"content":f"<@&{game['role_id']}> {emoji} Nowe kody do **{game['name']}**!" if ping else "",
+            "embeds":[embed],"allowed_mentions":{"parse":[],"roles":[game["role_id"]] if ping else []}}
+
+
+def post_webhook(payload, url=None, method="POST"):
+    url = url or WEBHOOK_URL
+    if not url:
+        raise RuntimeError("Webhook unavailable")
+    for attempt in range(4):
+        try:
+            if method == "POST":
+                response = requests.post(url, json=payload, timeout=15)
+            else:
+                response = requests.patch(url, json=payload, timeout=15)
+        except requests.RequestException:
+            raise RuntimeError("Discord network error") from None
+        if response.status_code == 429 and attempt < 3:
+            time.sleep(min(60, max(1, float(response.json().get("retry_after", 1)))))
+            continue
+        if response.status_code >= 300:
+            raise RuntimeError(f"Discord HTTP {response.status_code}")
+        return response
+
+
+def private_notice(message):
+    # Never send operational information to the public webhook.
+    print("::notice::" + message.replace("\n"," "))
+    if ADMIN_WEBHOOK_URL:
+        try:
+            post_webhook({"content":message[:1800],"allowed_mentions":{"parse":[]}}, ADMIN_WEBHOOK_URL)
+        except (RuntimeError, ValueError):
+            print("[WARN] Private webhook delivery failed")
+
+
+def expire_messages(state):
+    for message_id, item in list(state.get("_messages", {}).items()):
+        codes = [tuple(c) for c in item["codes"]]
+        expired = sorted(c[0] for c in codes if expiry_date(c[2]) and expiry_date(c[2]) <= datetime.now(timezone.utc))
+        if expired == item.get("expired", []):
+            continue
+        try:
+            post_webhook(build_group(item["game"], GAMES[item["game"]], codes, False),
+                         WEBHOOK_URL.split("?")[0].rstrip("/") + "/messages/" + message_id, "PATCH")
+            item["expired"] = expired
+        except (RuntimeError, ValueError) as exc:
+            if str(exc) == "Discord HTTP 404":
+                del state["_messages"][message_id]
+            else:
+                print("[WARN] Expiry update failed")
 
 
 def main():
@@ -528,45 +586,22 @@ def main():
             continue
         print(f"Sprawdzam {game['name']} (zrodlo: {game['source']})...")
 
-        if game["source"] == "api":
-            codes = fetch_codes_from_api(game_key, game)
-        else:
-            codes = None
-            if game.get("open_slug"):
-                # NTE: Gachafeed tracks official Discord announcements and captures
-                # codes missing from the API. WuWa: use JSON first.
-                if game_key == "nte":
-                    codes = fetch_gachafeed(game)
-                    if codes is None or not codes:
-                        backup = fetch_ntebuild()
-                        if backup is not None:
-                            codes = backup
-                    if codes is None:
-                        codes = fetch_open_codes(game)
-                else:
-                    codes = fetch_open_codes(game)
-                    if not codes:
-                        backup = fetch_gachafeed(game)
-                        if backup is not None:
-                            codes = backup
-                if codes is not None:
-                    print(f"[INFO] Zrodlo API/Gachafeed: {len(codes)}")
-            if codes is None:
-                codes = fetch_codes_from_scrape(game_key, game)
+        codes = collect_codes(game_key, game)
 
         if codes is None:
             # calkowita awaria tego zrodla w tym runie - liczymy do alertu, nie przerywamy calego runu
             count = failures.get(game_key, 0) + 1
             failures[game_key] = count
             print(f"  [WARN] Zrodlo dla {game['name']} calkowicie niedostepne ({count}. raz z rzedu).")
-            if count >= FAILURE_ALERT_THRESHOLD and count % FAILURE_ALERT_THRESHOLD == 0 and not args.dry_run:
-                if not send_status_alert(game, count):
-                    failures[game_key] = count - 1
+            if not args.dry_run and (count == 1 or count % 4 == 0):
+                private_notice(f"Awaria źródeł {game['name']}: {count} kolejnych prób")
             errors = True
             state[game_key] = sorted(state.get(game_key, []))
             continue
 
-        failures[game_key] = 0  # sukces - resetujemy licznik awarii
+        if failures.get(game_key, 0) and not args.dry_run:
+            private_notice(f"Przywrócono źródło: {game['name']}")
+        failures[game_key] = 0
         print(f"  Znaleziono {len(codes)} aktywnych kodow.")
 
         # dedup bez rozrozniania wielkosci liter - porownujemy znormalizowane (upper),
@@ -592,20 +627,26 @@ def main():
                 enriched.append((code, rewards, expiry))
             new_codes = enriched
 
-        for code, rewards, expiry in new_codes:
-            print(f"  Nowy kod: {code}")
-            if code.upper() in seen_normalized:
-                continue
+        # Five embeds fields per message keep total safely below Discord's 6000-character limit.
+        unique = {code.upper(): (code, rewards, expiry) for code, rewards, expiry in new_codes}
+        pending = list(unique.values())
+        for offset in range(0, len(pending), 5):
+            group = pending[offset:offset + 5]
+            for code, _, _ in group:
+                print(f"  Nowy kod: {code}")
             if args.dry_run:
-                seen_normalized.add(code.upper())
                 continue
             try:
-                send_discord_ping(game_key, game, code, rewards, expiry)
-            except (requests.RequestException, RuntimeError, ValueError):
-                print("[ERROR] Discord delivery failed; code remains pending", file=sys.stderr)
+                url = WEBHOOK_URL + ("&" if "?" in WEBHOOK_URL else "?") + "wait=true"
+                response = post_webhook(build_group(game_key, game, group, ping=offset == 0), url)
+                message_id = response.json()["id"]
+            except (RuntimeError, ValueError, KeyError):
+                print("[ERROR] Discord delivery failed; codes remain pending", file=sys.stderr)
                 errors = True
                 continue
-            seen_normalized.add(code.upper())
+            seen_normalized.update(code.upper() for code, _, _ in group)
+            if any(expiry_date(expiry) for _, _, expiry in group):
+                state.setdefault("_messages", {})[message_id] = {"game":game_key,"codes":group,"expired":[]}
             state[game_key] = sorted(seen_normalized)
             state["_failures"] = failures
             save_state(state)
@@ -617,6 +658,7 @@ def main():
     # zawsze zapisujemy stan, nawet jesli nic nowego - zeby plik zawsze istnial w repo
     state["_failures"] = failures
     if not args.dry_run:
+        expire_messages(state)
         save_state(state)
     print("Zapisano stan." if any_new else "Brak nowych kodow.")
     if errors:
