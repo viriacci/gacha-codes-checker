@@ -1,4 +1,5 @@
 name: Check game codes
+run-name: "${{ github.event_name == 'schedule' && 'Kontrola cykliczna kodów' || inputs.dry_run && 'Test kodów' || 'Publikacja kodów' }}"
 on:
   schedule:
     - cron: "0 7-23 * * *"
