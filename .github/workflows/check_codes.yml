@@ -1,44 +1,55 @@
 name: Check game codes
-
 on:
   schedule:
-    # przerwa nocna 23-7 czasu polskiego, sprawdzanie co 4h w ciagu dnia
-    # dwa harmonogramy zamiast jednego, zeby uwzglednic czas letni/zimowy (CEST/CET)
-    - cron: "0 5,9,13,17,21 * 4,5,6,7,8,9,10 *"   # lato (UTC+2): 7-23 lokalnie
-    - cron: "0 6,10,14,18,22 * 11,12,1,2,3 *"     # zima (UTC+1): 7-23 lokalnie
-  workflow_dispatch: {}  # pozwala odpalic recznie z zakladki Actions do testow
-
+    - cron: "0 7,11,15,19,23 * * *"
+      timezone: "Europe/Warsaw"
+  workflow_dispatch:
+    inputs:
+      game:
+        description: Optional game key
+        type: choice
+        options: ["all", "genshin", "zzz", "hsr", "wuwa", "nte"]
+        default: all
+      dry_run:
+        description: Check without sending or saving
+        type: boolean
+        default: true
 permissions:
-  contents: write  # potrzebne, zeby workflow mogl commitowac seen_codes.json
-
+  contents: write
+concurrency:
+  group: gacha-codes
+  cancel-in-progress: false
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests
       - name: Run scraper
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python scraper.py
-
+          GAME: ${{ inputs.game || 'all' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          args=()
+          if [ "$GAME" != all ]; then args+=(--game "$GAME"); fi
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python scraper.py "${args[@]}"
       - name: Commit updated state
+        if: always() && !cancelled()
         run: |
           git config user.name "code-checker-bot"
           git config user.email "actions@github.com"
-          if [ -f seen_codes.json ]; then
-            git add seen_codes.json
-            git diff --staged --quiet && echo "Brak zmian do commita" || git commit -m "Update seen codes [skip ci]"
-            git push
-          else
-            echo "seen_codes.json nie istnieje - scraper nie zapisal stanu (sprawdz log 'Run scraper')"
-          fi
+          git add seen_codes.json
+          if git diff --staged --quiet; then exit 0; fi
+          git commit -m "Update seen codes [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main

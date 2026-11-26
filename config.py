@@ -30,6 +30,7 @@ GAMES = {
         "icon_url": "https://raw.githubusercontent.com/viriacci/gacha-codes-checker/main/icons/HSR.png",
     },
     "wuwa": {
+        "open_slug": "wuwa",
         "name": "Wuthering Waves",
         "source": "scrape",  # brak publicznego API - scrapujemy Game8, best-effort
         "url": "https://game8.co/games/Wuthering-Waves/archives/453149",
@@ -39,6 +40,7 @@ GAMES = {
         "icon_url": "https://raw.githubusercontent.com/viriacci/gacha-codes-checker/main/icons/Wuwa.png",
     },
     "nte": {
+        "open_slug": "nte",
         "name": "Neverness to Everness",
         "source": "scrape",  # brak publicznego API - scrapujemy Game8, best-effort
         "url": "https://game8.co/games/Neverness-to-Everness/archives/593718",

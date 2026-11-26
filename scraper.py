@@ -5,6 +5,7 @@ Uruchamiane cyklicznie przez GitHub Actions (patrz .github/workflows/check_codes
 """
 
 import json
+import argparse
 import os
 import re
 import sys
@@ -31,7 +32,8 @@ def sanitize_code(raw_code: str) -> str:
     Usuwa wszystko inne - emoji, spacje, znaczniki "NEW" ktore czasem
     doklejaja sie do tekstu kodu przy scrapowaniu roznych stron.
     """
-    return re.sub(r"[^A-Za-z0-9_]", "", raw_code or "").strip()
+    code = (raw_code or "").strip()
+    return code if re.fullmatch(r"[A-Za-z0-9_-]{3,100}", code) else ""
 
 
 def get_with_retry(url: str, headers: dict = None, timeout: int = 20, attempts: int = 3):
@@ -43,7 +45,15 @@ def get_with_retry(url: str, headers: dict = None, timeout: int = 20, attempts: 
     last_exc = None
     for attempt in range(1, attempts + 1):
         try:
-            return requests.get(url, headers=headers, timeout=timeout)
+            response = requests.get(url, headers=headers, timeout=timeout)
+            if response.status_code in (429, 500, 502, 503, 504) and attempt < attempts:
+                try:
+                    delay = min(30, max(1, float(response.headers.get("Retry-After", 3 * attempt))))
+                except ValueError:
+                    delay = 3 * attempt
+                time.sleep(delay)
+                continue
+            return response
         except requests.RequestException as e:
             last_exc = e
             if attempt < attempts:
@@ -61,32 +71,48 @@ def load_state():
             content = f.read().strip()
             if not content:
                 print(f"  [WARN] {STATE_FILE} jest pusty - zaczynam od czystego stanu.")
-                return {}
-            return json.loads(content)
+                raise ValueError("Pusty plik stanu")
+            state = json.loads(content)
+            if not isinstance(state, dict) or any(not isinstance(v, list) for k, v in state.items() if k != "_failures") or not isinstance(state.get("_failures", {}), dict):
+                raise ValueError("Niepoprawna struktura stanu")
+            return state
     except json.JSONDecodeError as e:
         print(f"  [WARN] {STATE_FILE} jest uszkodzony ({e}) - zaczynam od czystego stanu "
               f"(niebezpieczenstwo: zdublowane pingi dla juz wyslanych kodow w tym runie).")
-        return {}
+        raise
 
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    target = Path(STATE_FILE)
+    tmp = target.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+    tmp.replace(target)
 
 
+_api_cache = {}
 def fetch_codes_from_api(game_key: str, game: dict):
     """Pobiera kody dla gier obslugiwanych przez db.hashblen.com/codes (bez scrapowania)."""
     try:
-        resp = get_with_retry(CODES_API_URL, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        if CODES_API_URL not in _api_cache:
+            resp = get_with_retry(CODES_API_URL, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError("Niepoprawny format API")
+            _api_cache[CODES_API_URL] = data
+        data = _api_cache[CODES_API_URL]
     except (requests.RequestException, ValueError) as e:
         print(f"[ERROR] API {CODES_API_URL} nie odpowiedzialo poprawnie: {e}", file=sys.stderr)
         return None
 
-    entries = data.get(game["api_key"], [])
+    entries = data.get(game["api_key"])
+    if not isinstance(entries, list):
+        return None
     results = []
     for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
+            return None
         desc = (entry.get("description") or "").strip()
         # API czasem zwraca pusty string albo placeholder "..." zamiast realnego opisu
         if not desc or desc == "...":
@@ -202,6 +228,30 @@ def extract_active_codes_from_mobalytics(html: str):
     return results
 
 
+def fetch_open_codes(game):
+    try:
+        resp = get_with_retry("https://api.ennead.cc/codes/" + game["open_slug"], timeout=15)
+        resp.raise_for_status()
+        entries = resp.json()
+        if not isinstance(entries, list):
+            raise ValueError("Expected list")
+        results = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
+                raise ValueError("Invalid entry")
+            code = sanitize_code(entry["code"])
+            if not code:
+                raise ValueError("Invalid code")
+            rewards = entry.get("rewards") or []
+            if not isinstance(rewards, list) or not all(isinstance(x, str) for x in rewards):
+                raise ValueError("Invalid rewards")
+            results.append((code, "\n".join("• " + x for x in rewards), None))
+        return results
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        print(f"  [WARN] OpenGachaCodes: {type(exc).__name__}")
+        return None
+
+
 def fetch_codes_from_scrape(game_key: str, game: dict):
     """
     Best-effort scraping dla gier bez wlasnego API (WuWa, NTE).
@@ -244,7 +294,11 @@ def _try_scrape_source(url: str, game_name: str, parser_fn):
         print(f"  [WARN] {url} zwrocilo status {resp.status_code} dla {game_name}.")
         return None
 
-    return parser_fn(resp.text)
+    results = parser_fn(resp.text)
+    if not results:
+        print(f"  [WARN] Brak rozpoznanych kodow: {url}; wynik niepewny, probuje inne zrodlo.")
+        return None
+    return results
 
 
 def build_reward_lookup(game: dict):
@@ -306,12 +360,23 @@ def send_discord_ping(game_key: str, game: dict, code: str, rewards: str, expiry
     payload = {
         "content": content,
         "embeds": [embed],
+        "allowed_mentions": {"parse": [], "roles": [game["role_id"]]},
     }
 
-    resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
-    if resp.status_code >= 300:
-        print(f"[WARN] Discord webhook zwrocil {resp.status_code}: {resp.text}", file=sys.stderr)
+    post_webhook(payload)
     time.sleep(1)
+
+
+def post_webhook(payload):
+    # Retry only explicit rejections; timeout can mean Discord accepted the message.
+    for attempt in range(4):
+        resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
+        if resp.status_code == 429 and attempt < 3:
+            time.sleep(min(60, max(1, float(resp.json().get("retry_after", 1)))))
+            continue
+        if resp.status_code >= 300:
+            raise RuntimeError(f"Discord HTTP {resp.status_code}")
+        return
 
 
 FAILURE_ALERT_THRESHOLD = 4  # 4 kolejne nieudane proby z rzedu (dokladny czas zalezy od pory dnia - patrz cron)
@@ -327,35 +392,49 @@ def send_status_alert(game: dict, failures: int):
         )
     }
     try:
-        requests.post(WEBHOOK_URL, json=payload, timeout=15)
-    except requests.RequestException as e:
-        print(f"[WARN] Nie udalo sie wyslac alertu o awarii: {e}", file=sys.stderr)
+        payload["allowed_mentions"] = {"parse": [], "roles": [ALERT_ROLE_ID]}
+        post_webhook(payload)
+        return True
+    except (requests.RequestException, RuntimeError, ValueError):
+        print("[WARN] Nie udalo sie wyslac alertu o awarii", file=sys.stderr)
+        return False
 
 
 def main():
-    if not WEBHOOK_URL:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--game", choices=GAMES)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    if not WEBHOOK_URL and not args.dry_run:
         print("Brak DISCORD_WEBHOOK_URL w zmiennych srodowiskowych.", file=sys.stderr)
         sys.exit(1)
 
     state = load_state()
     failures = state.get("_failures", {})
     any_new = False
+    errors = False
 
     for game_key, game in GAMES.items():
+        if args.game and game_key != args.game:
+            continue
         print(f"Sprawdzam {game['name']} (zrodlo: {game['source']})...")
 
         if game["source"] == "api":
             codes = fetch_codes_from_api(game_key, game)
         else:
-            codes = fetch_codes_from_scrape(game_key, game)
+            codes = fetch_open_codes(game) if game.get("open_slug") else None
+            if codes is None:
+                codes = fetch_codes_from_scrape(game_key, game)
 
         if codes is None:
             # calkowita awaria tego zrodla w tym runie - liczymy do alertu, nie przerywamy calego runu
             count = failures.get(game_key, 0) + 1
             failures[game_key] = count
             print(f"  [WARN] Zrodlo dla {game['name']} calkowicie niedostepne ({count}. raz z rzedu).")
-            if count == FAILURE_ALERT_THRESHOLD:
-                send_status_alert(game, count)
+            if count >= FAILURE_ALERT_THRESHOLD and count % FAILURE_ALERT_THRESHOLD == 0 and not args.dry_run:
+                if not send_status_alert(game, count):
+                    failures[game_key] = count - 1
+            errors = True
             state[game_key] = sorted(state.get(game_key, []))
             continue
 
@@ -364,7 +443,7 @@ def main():
 
         # dedup bez rozrozniania wielkosci liter - porownujemy znormalizowane (upper),
         # ale wysylamy/wyswietlamy oryginalny zapis kodu
-        seen_normalized = set(state.get(game_key, []))
+        seen_normalized = {x.upper() for x in state.get(game_key, [])}
         new_codes = [
             (code, rewards, expiry) for code, rewards, expiry in codes
             if code.upper() not in seen_normalized
@@ -387,8 +466,21 @@ def main():
 
         for code, rewards, expiry in new_codes:
             print(f"  Nowy kod: {code}")
-            send_discord_ping(game_key, game, code, rewards, expiry)
+            if code.upper() in seen_normalized:
+                continue
+            if args.dry_run:
+                seen_normalized.add(code.upper())
+                continue
+            try:
+                send_discord_ping(game_key, game, code, rewards, expiry)
+            except (requests.RequestException, RuntimeError, ValueError):
+                print("[ERROR] Discord delivery failed; code remains pending", file=sys.stderr)
+                errors = True
+                continue
             seen_normalized.add(code.upper())
+            state[game_key] = sorted(seen_normalized)
+            state["_failures"] = failures
+            save_state(state)
             any_new = True
 
         state[game_key] = sorted(seen_normalized)
@@ -396,8 +488,11 @@ def main():
 
     # zawsze zapisujemy stan, nawet jesli nic nowego - zeby plik zawsze istnial w repo
     state["_failures"] = failures
-    save_state(state)
+    if not args.dry_run:
+        save_state(state)
     print("Zapisano stan." if any_new else "Brak nowych kodow.")
+    if errors:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
