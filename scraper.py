@@ -6,6 +6,7 @@ Uruchamiane cyklicznie przez GitHub Actions (patrz .github/workflows/check_codes
 
 import json
 import argparse
+from datetime import datetime, timezone
 import os
 import re
 import sys
@@ -252,6 +253,61 @@ def fetch_open_codes(game):
         return None
 
 
+def extract_gachafeed(html):
+    """Only read the explicitly labelled code history table, not news or expired entries."""
+    soup = BeautifulSoup(html, "html.parser")
+    expected = ["code", "found", "rewards", "end date", "status"]
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+        header = [x.get_text(" ", strip=True).lower() for x in rows[0].find_all(["th", "td"])]
+        if header != expected:
+            continue
+        result = []
+        if len(rows) == 1:
+            return None
+        for row in rows[1:]:
+            cells = row.find_all("td")
+            if len(cells) != 5:
+                return None
+            status = cells[4].get_text(" ", strip=True).casefold()
+            if status != "working":
+                continue
+            code = sanitize_code(cells[0].get_text(strip=True))
+            if not code:
+                return None
+            reward = cells[2].get_text(" ", strip=True)
+            expiry = cells[3].get_text(" ", strip=True)
+            if expiry.lower() in ("not stated", "no expiry listed", ""):
+                expiry = None
+            if expiry:
+                try:
+                    if datetime.strptime(expiry, "%b %d, %Y").date() < datetime.now(timezone.utc).date():
+                        continue
+                except ValueError:
+                    pass
+            result.append((code, None if reward.lower() == "not stated" else "• " + reward, expiry))
+        return result
+    return None
+
+
+def fetch_gachafeed(game):
+    url = "https://gachafeed.moe/" + game["open_slug"] + "/codes/"
+    try:
+        response = get_with_retry(url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        result = extract_gachafeed(response.text)
+        if result is None:
+            print("[WARN] Gachafeed: nierozpoznana struktura tabeli")
+        else:
+            print(f"[INFO] Gachafeed: {len(result)} aktywnych kodow")
+        return result
+    except (requests.RequestException, ValueError):
+        print("[WARN] Gachafeed: zrodlo niedostepne")
+        return None
+
+
 def fetch_codes_from_scrape(game_key: str, game: dict):
     """
     Best-effort scraping dla gier bez wlasnego API (WuWa, NTE).
@@ -422,7 +478,22 @@ def main():
         if game["source"] == "api":
             codes = fetch_codes_from_api(game_key, game)
         else:
-            codes = fetch_open_codes(game) if game.get("open_slug") else None
+            codes = None
+            if game.get("open_slug"):
+                # NTE: Gachafeed tracks official Discord announcements and captures
+                # codes missing from the API. WuWa: use JSON first.
+                if game_key == "nte":
+                    codes = fetch_gachafeed(game)
+                    if codes is None:
+                        codes = fetch_open_codes(game)
+                else:
+                    codes = fetch_open_codes(game)
+                    if not codes:
+                        backup = fetch_gachafeed(game)
+                        if backup is not None:
+                            codes = backup
+                if codes is not None:
+                    print(f"[INFO] Zrodlo API/Gachafeed: {len(codes)}")
             if codes is None:
                 codes = fetch_codes_from_scrape(game_key, game)
 
