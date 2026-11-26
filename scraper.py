@@ -254,7 +254,7 @@ def fetch_open_codes(game):
 
 
 def extract_gachafeed(html):
-    """Only read the explicitly labelled code history table, not news or expired entries."""
+    """Read explicit working-code history or the counted active-code summary."""
     soup = BeautifulSoup(html, "html.parser")
     expected = ["code", "found", "rewards", "end date", "status"]
     for table in soup.find_all("table"):
@@ -265,18 +265,19 @@ def extract_gachafeed(html):
         if header != expected:
             continue
         result = []
-        if len(rows) == 1:
-            return None
+        malformed = False
         for row in rows[1:]:
             cells = row.find_all("td")
             if len(cells) != 5:
-                return None
-            status = cells[4].get_text(" ", strip=True).casefold()
+                malformed = True
+                break
+            status = cells[4].get_text(" ", strip=True).casefold().strip("✓✔ ")
             if status != "working":
                 continue
             code = sanitize_code(cells[0].get_text(strip=True))
             if not code:
-                return None
+                malformed = True
+                break
             reward = cells[2].get_text(" ", strip=True)
             expiry = cells[3].get_text(" ", strip=True)
             if expiry.lower() in ("not stated", "no expiry listed", ""):
@@ -288,8 +289,60 @@ def extract_gachafeed(html):
                 except ValueError:
                     pass
             result.append((code, None if reward.lower() == "not stated" else "• " + reward, expiry))
-        return result
+        if result and not malformed:
+            return result
+        # An empty history is not sufficient evidence that there are no working codes.
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    summary = re.search(r"there (?:are|is) (\d+) working (?:Neverness to Everness|Wuthering Waves) codes?\s*:\s*([^.!?]+)", text, re.I)
+    if summary:
+        count = int(summary.group(1))
+        raw_codes = re.split(r"\s*,\s*(?:and\s+)?|\s+and\s+", summary.group(2).strip())
+        codes = [sanitize_code(x) for x in raw_codes]
+        if count == len(codes) and count > 0 and all(codes) and len(set(codes)) == count:
+            return [(code, None, None) for code in codes]
+    if re.search(r"\b0 active codes\b|\bno (?:active|working) (?:Neverness to Everness|Wuthering Waves) codes\b", text, re.I):
+        return []
     return None
+
+
+def extract_ntebuild(html):
+    soup = BeautifulSoup(html, "html.parser")
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+        header = [x.get_text(" ", strip=True).lower() for x in rows[0].find_all(["th", "td"])]
+        if header != ["code", "rewards", "validity", "status"]:
+            continue
+        result = []
+        for row in rows[1:]:
+            cells = row.find_all("td")
+            if len(cells) != 4:
+                return None
+            if cells[3].get_text(" ", strip=True).casefold().strip("✓✔ ") != "working":
+                continue
+            code = sanitize_code(cells[0].get_text(strip=True))
+            if not code:
+                return None
+            reward = cells[1].get_text(" ", strip=True)
+            result.append((code, "• " + reward if reward else None, None))
+        return result if len(rows) > 1 else None
+    return None
+
+
+def fetch_ntebuild():
+    try:
+        response = get_with_retry("https://www.ntebuild.com/codes", headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        result = extract_ntebuild(response.text)
+        if result is not None:
+            print(f"[INFO] NTEBuild: {len(result)} aktywnych kodow")
+        else:
+            print("[WARN] NTEBuild: nierozpoznana struktura")
+        return result
+    except (requests.RequestException, ValueError):
+        print("[WARN] NTEBuild: zrodlo niedostepne")
+        return None
 
 
 def fetch_gachafeed(game):
@@ -484,6 +537,10 @@ def main():
                 # codes missing from the API. WuWa: use JSON first.
                 if game_key == "nte":
                     codes = fetch_gachafeed(game)
+                    if codes is None or not codes:
+                        backup = fetch_ntebuild()
+                        if backup is not None:
+                            codes = backup
                     if codes is None:
                         codes = fetch_open_codes(game)
                 else:

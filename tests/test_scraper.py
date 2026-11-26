@@ -28,3 +28,11 @@ class ScraperTests(unittest.TestCase):
         <tr><td><code>OLD123</code></td><td>yesterday</td><td>100 coins</td><td>Jan 1, 2020</td><td>Reached its end date</td></tr></table>"""
         self.assertEqual(scraper.extract_gachafeed(html), [("TEST123","• 50 coins",None)])
         self.assertIsNone(scraper.extract_gachafeed("<h1>Blocked</h1>"))
+
+    def test_gachafeed_counted_summary(self):
+        html = "<p>As of November 26, 2026, there are 2 working Neverness to Everness codes: ABC123 and DEF456.</p>"
+        self.assertEqual(scraper.extract_gachafeed(html), [("ABC123",None,None),("DEF456",None,None)])
+        self.assertIsNone(scraper.extract_gachafeed(html.replace("2 working","3 working")))
+    def test_ntebuild(self):
+        html = "<table><tr><th>Code</th><th>Rewards</th><th>Validity</th><th>Status</th></tr><tr><td>ABC123</td><td>50 coins</td><td>TBA</td><td>✓ Working</td></tr></table>"
+        self.assertEqual(scraper.extract_ntebuild(html), [("ABC123","• 50 coins",None)])
